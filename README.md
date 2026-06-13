@@ -1,82 +1,142 @@
-# ternary-ear
+# Ternary Ear
 
-**Ear training for ternary agents (and the humans who build them).**
+Listening and **pattern recognition across a ternary agent fleet**. Agents perceive each other's {-1, 0, +1} signal streams and learn from them — detecting recurring patterns, measuring frequency distributions, analyzing harmonic relationships, tracking rhythms, and improving recognition accuracy over time.
 
-Ear training is what musicians do to connect the abstract (intervals, chords, scales) to the experiential (what they sound like). You hear a minor third, you *know* it's a minor third, because you've trained your ear to recognize it. It's pattern recognition for sound.
+## Why It Matters
 
-This crate implements ear training for ternary systems: interval recognition, rhythm identification, frequency discrimination, and pattern matching. It's for agents that need to *listen* — to recognize what they're hearing and respond appropriately. It's also for humans who want to train their ears on the ternary sound world.
+A fleet of ternary agents generates a continuous stream of ternary signals. Without listening infrastructure, each agent is deaf to others' behavior patterns. The Ear provides five layers of perception:
 
-## What's Inside
+1. **Pattern matching**: Register specific ternary sequences and detect when they recur
+2. **Frequency analysis**: Track the distribution of {-1, 0, +1} values over time
+3. **Harmonic analysis**: Discover inverse, shifted, and correlated signal pairs
+4. **Rhythm detection**: Find periodic patterns using autocorrelation
+5. **Memory**: Store and retrieve recognized patterns with capacity-limited LRU eviction
 
-- **`EarTrainer`** — manages training sessions with scoring and progression
-- **`interval_quiz(ticks)`** — generate a random interval, ask the listener to identify it
-- **`rhythm_quiz(ticks)`** — play a rhythm pattern, ask the listener to identify the meter
-- **`frequency_discrimination(base_freq, ticks)`** — is the second tone higher, lower, or the same?
-- **`pattern_match(heard, vocabulary)`** — which pattern from the vocabulary was just played?
-- **`relative_pitch(reference, target)`** — what's the interval between these two tones?
-- **`TrainingScore`** — tracks correct/incorrect/streak for each category
+Together, these transform raw signal streams into actionable fleet intelligence — detecting coordination, spotting anomalies, and predicting future behavior.
 
-## Quick Example
+## How It Works
+
+### Pattern Detection
+
+The `Ear` maintains a ring buffer of incoming ternary values and a list of watched patterns. On each `listen(value)` call, it checks if the tail of the buffer matches any registered pattern:
+
+$$\text{match}(P, B) \iff B[|B|-|P| \; \ldots \; |B|] = P$$
+
+The `detect_recurring(min_obs)` function scans the entire buffer for all subsequences of length 2 to `max_pattern_len` that appear at least `min_obs` times. This uses a sliding-window enumeration:
+
+$$\text{count}(s, B) = |\{i : B[i \ldots i+|s|] = s\}|$$
+
+### Frequency Analysis
+
+The `FrequencyDetector` maintains counts $[n_{-1}, n_0, n_{+1}]$ and computes:
+
+$$f(v) = \frac{n_v}{n_{-1} + n_0 + n_{+1}}$$
+
+The **dominant** value is $\arg\max_v n_v$. Uniformity is tested: all counts within 10% of $N/3$. Shannon entropy:
+
+$$H = -\sum_v f(v) \log_2 f(v), \quad H_{\max} = \log_2 3 \approx 1.585$$
+
+### Harmonic Analysis
+
+The `HarmonicAnalyzer` discovers structural relationships between signal pairs:
+
+**Inverse**: $\forall i: a_i = -b_i$ (perfect anti-correlation)
+
+**Shifted by k**: $\forall i: a_i = b_{(i+k) \bmod n}$ (cyclic rotation)
+
+**Correlation**: The ternary correlation coefficient:
+
+$$\rho(a, b) = \frac{1}{n} \sum_{i=1}^{n} a_i \cdot b_i$$
+
+Since $a_i, b_i \in \{-1, 0, +1\}$, the product $a_i \cdot b_i \in \{-1, 0, +1\}$, and $\rho \in [-1, +1]$. Perfect correlation: $\rho = +1$. Perfect anti-correlation: $\rho = -1$.
+
+### Rhythm Tracking
+
+The `RhythmTracker` detects periodic patterns via autocorrelation:
+
+$$\hat{p} = \arg\max_{p \in [2, N/2]} \rho(B[0:N-p], B[p:N])$$
+
+Only accepted if $\rho > 0.5$. Once a period is detected, prediction is:
+
+$$\hat{x}_{t+1} = B[(t+1) \bmod \hat{p}]$$
+
+### Complexity
+
+| Operation | Time |
+|-----------|------|
+| `Ear::listen(v)` | O(P · L) — P patterns, L = max pattern length |
+| `detect_recurring(min_obs)` | O(N · L²) — N = buffer length, L = max pattern |
+| `FrequencyDetector::observe(v)` | O(1) |
+| `HarmonicAnalyzer::correlation(a, b)` | O(N) |
+| `RhythmTracker::detect_period()` | O(N²/2) — all candidate periods |
+| `EarTraining::record(correct)` | O(1) |
+| `EarMemory::store/retrieve` | O(C) — C = capacity |
+
+## Quick Start
 
 ```rust
-use ternary_ear::*;
+use ternary_ear::{Ear, Pattern, FrequencyDetector, HarmonicAnalyzer, RhythmTracker, EarMemory};
 
-let mut trainer = EarTrainer::new();
+// Listen for patterns
+let mut ear = Ear::new(3);
+ear.watch(Pattern::new(vec![1, -1]));
+ear.listen_all(&[1, -1, 0, 1, -1]);
+assert!(ear.patterns[0].observations >= 2);
 
-// Generate an interval quiz: two tones, listener identifies the relationship
-let quiz = trainer.interval_quiz(16);
-// Returns two ternary signals at different frequencies
+// Discover recurring patterns
+let mut ear2 = Ear::new(3);
+ear2.listen_all(&[1, 1, 0, 1, 1, 0, 1, 1]);
+let found = ear2.detect_recurring(2);
+assert!(found.iter().any(|p| p.values == vec![1, 1]));
 
-// Check the answer
-let correct = trainer.check_answer(Interval::Fifth);
-// Was it a fifth? trainer knows.
+// Frequency analysis
+let mut fd = FrequencyDetector::new();
+fd.observe(1); fd.observe(1); fd.observe(-1);
+assert_eq!(fd.dominant(), 1);
+let h = fd.entropy(); // Shannon entropy
 
-// Rhythm identification
-let rhythm = trainer.rhythm_quiz(8);
-// Play a rhythm, identify if it's 4/4, 3/4, 6/8, etc.
+// Harmonic analysis
+let corr = HarmonicAnalyzer::correlation(&[1, 1, 1], &[1, 1, 1]);
+assert!((corr - 1.0).abs() < 0.001);
 
-// Pattern matching against a vocabulary
-let vocab = vec![
-    vec![1, 0, -1, 0],
-    vec![1, 1, -1, -1],
-    vec![-1, 0, 1, 0],
-];
-let heard = vec![1, 0, -1, 0];
-let best = pattern_match(&heard, &vocab);
-// Should match index 0
+// Rhythm detection
+let mut rt = RhythmTracker::new();
+for _ in 0..6 { rt.observe(1); rt.observe(-1); }
+assert_eq!(rt.detect_period(), 2);
+assert_eq!(rt.predict_next(), Some(1));
 
-// Check training progress
-let score = trainer.score();
-println!("Correct: {}/{}, streak: {}", score.correct, score.total, score.streak);
+// Memory with LRU eviction
+let mut mem = EarMemory::new(10);
+mem.store(Pattern::new(vec![1, -1, 0]), 100);
 ```
 
-## The Deeper Truth
+## API
 
-**An agent that can't hear can't improvise.** In a jam session (ternary-jam), agents need to recognize what other agents are playing — is that a rhythm or a melody? Is it ascending or descending? Is it repeating? Ear training gives agents the perceptual vocabulary to participate in musical conversation.
+| Type | Description |
+|------|-------------|
+| `Ear` | Main pattern recognizer with buffer + watched patterns |
+| `Pattern` | A ternary subsequence with observation count + last seen |
+| `FrequencyDetector` | Per-value frequency tracking + entropy |
+| `HarmonicAnalyzer` | Inverse/shifted/correlation analysis between sequences |
+| `RhythmTracker` | Period detection + prediction via autocorrelation |
+| `EarTraining` | Hit/miss accuracy tracking over time |
+| `EarMemory` | Capacity-limited pattern storage with LRU eviction |
 
-The ternary ear is different from the continuous ear. In continuous audio, you hear absolute pitch (440Hz = A). In ternary, there IS no absolute pitch — only relative relationships. Every interval is a ratio, not a frequency. This means ternary ear training is purely about *proportions* — the relationship between things, not the things themselves. It's musical relativity.
+## Architecture Notes
 
-**Use cases:**
-- **Agent training** — teach agents to recognize musical patterns
-- **Music education** — ear training with the simplest possible sound world
-- **Pattern recognition** — identify recurring patterns in ternary signals
-- **Interactive music** — let AI identify what the player is doing musically
-- **Accessibility** — ternary patterns are easier to distinguish than continuous audio for some listeners
+The Ear system implements the **γ + η = C** conservation principle through information-theoretic invariants:
 
-## See Also
+- **γ (structure)**: the fleet's signal generation architecture — which agents emit which signals
+- **η (dynamics)**: the incoming signal stream — the observable perturbation that the Ear processes
+- **C (conservation)**: the total information content — patterns detected + patterns stored + patterns predicted = constant information budget. The memory capacity constraint enforces this: storing new patterns evicts old ones.
 
-- **ternary-jam** — jam sessions where ear-trained agents perform better
-- **ternary-harmonic** — the intervals and chords being identified
-- **ternary-rhythm** — rhythm patterns for rhythm quizzes
-- **ternary-phase** — phase recognition (another ear training skill)
-- **ternary-muse** — creative generation (the complement to ear training's perception)
+The autocorrelation function used in rhythm detection is itself a conservation law: $\rho(\tau) \leq \rho(0) = 1$ for all $\tau$, meaning the signal's self-similarity is bounded by its energy. When $\rho(\hat{p}) > 0.5$, the period $\hat{p}$ captures more than half the signal's structure.
 
-## Install
+## References
 
-```bash
-cargo add ternary-ear
-```
+- Shannon, C.E. (1948). *A Mathematical Theory of Communication*. Bell System Technical Journal.
+| Box, G.E.P. & Jenkins, G.M. (1970). *Time Series Analysis: Forecasting and Control*. — Autocorrelation and period detection.
+| Oppenheim, A.V. & Schafer, R.W. (2010). *Discrete-Time Signal Processing* (3rd ed.). Pearson.
+| MacKay, D.J.C. (2003). *Information Theory, Inference, and Learning Algorithms*. Cambridge.
 
-## License
-
-MIT
+## License: MIT
